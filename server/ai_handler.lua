@@ -109,46 +109,8 @@ function ProcessRequestQueue()
 end
 
 -----------------------------------------------------------
--- FALLBACK DIALOGUE SYSTEM
+-- FALLBACK DIALOGUE SYSTEM (uses Config.FallbackResponses)
 -----------------------------------------------------------
-local FallbackDialogue = {
-    generic = {
-        "*scratches head* What were we talking about again?",
-        "*looks around nervously* I... forgot what I was saying.",
-        "Hmm? Sorry, got distracted for a second there.",
-        "*clears throat* Anyway, what did you want to know?",
-        "*shifts weight* My mind wandered for a bit there...",
-    },
-    criminal = {
-        "*glances around* Can't talk right now, too many eyes.",
-        "*lowers voice* Not a good time. Come back later.",
-        "I don't know nothing about nothing, capisce?",
-        "*shrugs* Street's been quiet. Nothing to report.",
-        "*spits* Ask someone else, I got my own problems.",
-    },
-    legitimate = {
-        "I'm sorry, I'm quite busy at the moment.",
-        "*checks phone* I have another appointment, can we continue later?",
-        "Is there something specific I can help you with?",
-        "*smiles politely* Why don't we pick this up another time?",
-        "I'm not sure I understand what you're asking.",
-    },
-    service = {
-        "How can I help you today?",
-        "*nods* What can I get for you?",
-        "Need anything else?",
-        "*wipes counter* Just let me know if you need something.",
-        "Anything on your mind?",
-    },
-    api_down = {
-        "*holds head* Sorry, not feeling well right now. Come back later.",
-        "*waves dismissively* Bad timing, friend. Maybe later.",
-        "*turns away* I've got nothing for you today.",
-        "*sighs* Too much on my mind right now. Another day.",
-        "*looks tired* Not now. I need a break.",
-    }
-}
-
 function GetFallbackResponse(npc, reason)
     local category = "generic"
 
@@ -163,12 +125,22 @@ function GetFallbackResponse(npc, reason)
         end
     end
 
-    -- Use API down messages for actual failures
+    -- Use API error messages for actual failures
     if reason == "api_error" or reason == "timeout" then
-        category = "api_down"
+        category = "api_error"
     end
 
-    local responses = FallbackDialogue[category] or FallbackDialogue.generic
+    -- Get from config, fallback to generic if category missing
+    local responses = Config.FallbackResponses and Config.FallbackResponses[category]
+    if not responses or #responses == 0 then
+        responses = Config.FallbackResponses and Config.FallbackResponses.generic
+    end
+
+    -- Ultimate fallback if config is missing entirely
+    if not responses or #responses == 0 then
+        return "*looks distracted* Sorry, what were you saying?"
+    end
+
     return responses[math.random(#responses)]
 end
 
@@ -425,11 +397,35 @@ function CleanAIResponse(response)
 end
 
 -----------------------------------------------------------
--- Text-to-Speech Generation
+-- Text-to-Speech Generation (with proper caching)
 -----------------------------------------------------------
-function GenerateTTS(playerId, text, voiceId, audioId)
+local audioCache = {}
+local cacheSize = 0
+
+-- Create a deterministic cache key from text + voice
+local function GetTTSCacheKey(text, voiceId)
+    -- Normalize text (lowercase, trim, remove excess whitespace)
+    local normalized = text:lower():gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")
+    -- Create hash from text + voice
+    return GetHashKey(normalized .. "_" .. (voiceId or "default"))
+end
+
+function GenerateTTS(playerId, text, voiceId)
     if not Config.TTS.enabled then return end
     if not Config.TTS.apiKey or Config.TTS.apiKey == "YOUR_ELEVENLABS_KEY_HERE" then
+        return
+    end
+
+    local voice = voiceId or Config.TTS.defaultVoice
+    local cacheKey = GetTTSCacheKey(text, voice)
+
+    -- Check cache first - if we have this exact phrase already, just play it
+    if Config.TTS.cacheAudio and audioCache[cacheKey] then
+        local cachedFile = audioCache[cacheKey]
+        TriggerClientEvent('ai-npcs:client:playAudio', playerId, cachedFile)
+        if Config.Debug.enabled then
+            print(("[AI NPCs] TTS cache hit: %s"):format(cachedFile))
+        end
         return
     end
 
@@ -447,11 +443,11 @@ function GenerateTTS(playerId, text, voiceId, audioId)
         ["xi-api-key"] = Config.TTS.apiKey
     }
 
-    local url = Config.TTS.apiUrl .. (voiceId or Config.TTS.defaultVoice)
+    local url = Config.TTS.apiUrl .. voice
 
     PerformHttpRequest(url, function(statusCode, response, respHeaders)
         if statusCode == 200 then
-            local fileName = ("audio_%s.ogg"):format(audioId or GetHashKey(text .. os.time()))
+            local fileName = ("audio_%s.ogg"):format(cacheKey)
             local savePath = "audio/" .. fileName
 
             -- Save audio file
@@ -459,8 +455,8 @@ function GenerateTTS(playerId, text, voiceId, audioId)
 
             if saved then
                 -- Cache reference
-                if audioId and Config.TTS.cacheAudio then
-                    audioCache[audioId] = fileName
+                if Config.TTS.cacheAudio then
+                    audioCache[cacheKey] = fileName
                     cacheSize = cacheSize + 1
 
                     -- Clean cache if too large
@@ -473,7 +469,7 @@ function GenerateTTS(playerId, text, voiceId, audioId)
                 TriggerClientEvent('ai-npcs:client:playAudio', playerId, fileName)
 
                 if Config.Debug.enabled then
-                    print(("[AI NPCs] Generated TTS audio: %s"):format(fileName))
+                    print(("[AI NPCs] Generated TTS audio: %s (cached)"):format(fileName))
                 end
             end
         else

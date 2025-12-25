@@ -7,15 +7,94 @@ local intelCooldowns = {}     -- { [identifier] = { [topic] = lastAccessTime } }
 local audioCache = {}
 local cacheSize = 0
 
+-- State locking: Track which player is talking to which NPC
+local npcLocks = {}  -- { [npcId] = playerId }
+
+-- Batch trust saving: Queue changes and commit periodically
+local trustUpdateQueue = {}  -- { { identifier, trustCategory, npcId, value }, ... }
+local TRUST_SAVE_INTERVAL = 300000  -- 5 minutes
+
 -----------------------------------------------------------
 -- STARTUP
 -----------------------------------------------------------
 CreateThread(function()
     print("^2[AI NPCs]^7 Server initialized - Advanced conversation system loaded")
     print("^2[AI NPCs]^7 Trust system: " .. (Config.Trust.enabled and "ENABLED" or "DISABLED"))
-    print("^2[AI NPCs]^7 Database persistence: ENABLED")
+    print("^2[AI NPCs]^7 Database persistence: ENABLED (batch mode)")
     print("^2[AI NPCs]^7 Player context: ENABLED")
 end)
+
+-----------------------------------------------------------
+-- NPC STATE LOCKING
+-----------------------------------------------------------
+function LockNPCForPlayer(npcId, playerId)
+    if npcLocks[npcId] and npcLocks[npcId] ~= playerId then
+        return false  -- NPC is locked by another player
+    end
+    npcLocks[npcId] = playerId
+    return true
+end
+
+function UnlockNPC(npcId, playerId)
+    if npcLocks[npcId] == playerId then
+        npcLocks[npcId] = nil
+    end
+end
+
+function IsNPCLockedByOther(npcId, playerId)
+    return npcLocks[npcId] and npcLocks[npcId] ~= playerId
+end
+
+function GetNPCLockOwner(npcId)
+    return npcLocks[npcId]
+end
+
+-----------------------------------------------------------
+-- RANGE VALIDATION HELPER
+-----------------------------------------------------------
+local INTERACTION_RANGE = 5.0  -- Max distance for interactions
+
+function IsPlayerNearNPC(playerId, npcId)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    -- Get NPC coordinates from config
+    local npc = GetNPCById(npcId)
+    if not npc then return false end
+
+    -- Get player coordinates
+    local playerPed = GetPlayerPed(playerId)
+    if not playerPed or playerPed == 0 then return false end
+
+    local playerCoords = GetEntityCoords(playerPed)
+    local npcCoords = npc.homeLocation
+
+    -- Calculate distance (use vector if available, else manual)
+    local distance = #(vector3(playerCoords.x, playerCoords.y, playerCoords.z) -
+                       vector3(npcCoords.x, npcCoords.y, npcCoords.z))
+
+    return distance <= INTERACTION_RANGE
+end
+
+-- Extended range check for quest interactions (player might be further away for deliveries)
+function IsPlayerInQuestRange(playerId, npcId)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    local npc = GetNPCById(npcId)
+    if not npc then return false end
+
+    local playerPed = GetPlayerPed(playerId)
+    if not playerPed or playerPed == 0 then return false end
+
+    local playerCoords = GetEntityCoords(playerPed)
+    local npcCoords = npc.homeLocation
+
+    local distance = #(vector3(playerCoords.x, playerCoords.y, playerCoords.z) -
+                       vector3(npcCoords.x, npcCoords.y, npcCoords.z))
+
+    return distance <= 10.0  -- Slightly larger range for quest completion
+end
 
 -----------------------------------------------------------
 -- DATABASE: TRUST SYSTEM
@@ -46,32 +125,89 @@ function GetPlayerTrust(identifier, trustCategory, npcId)
     return trustValue
 end
 
--- Add trust and save to database
+-- Add trust (cached locally, batch saved to DB)
 function AddPlayerTrust(identifier, trustCategory, npcId, amount)
     local current = GetPlayerTrust(identifier, trustCategory, npcId)
     local newValue = math.min(100, current + amount)
 
-    -- Update cache
+    -- Update cache immediately
     if not playerTrustCache[identifier] then playerTrustCache[identifier] = {} end
     if not playerTrustCache[identifier][trustCategory] then playerTrustCache[identifier][trustCategory] = {} end
     playerTrustCache[identifier][trustCategory][npcId] = newValue
 
-    -- Upsert to database
-    MySQL.insert.await([[
-        INSERT INTO ai_npc_trust (citizenid, npc_id, trust_category, trust_value, conversation_count)
-        VALUES (?, ?, ?, ?, 1)
-        ON DUPLICATE KEY UPDATE
-            trust_value = ?,
-            conversation_count = conversation_count + 1,
-            last_interaction = CURRENT_TIMESTAMP
-    ]], {identifier, npcId, trustCategory, newValue, newValue})
+    -- Queue for batch save (overwrites previous queued value for same key)
+    local queueKey = identifier .. "_" .. trustCategory .. "_" .. npcId
+    trustUpdateQueue[queueKey] = {
+        identifier = identifier,
+        trustCategory = trustCategory,
+        npcId = npcId,
+        value = newValue
+    }
 
     if Config.Debug.enabled then
-        print(("[AI NPCs] Trust saved to DB: %s -> %s (+%d) = %d"):format(
+        print(("[AI NPCs] Trust queued: %s -> %s (+%d) = %d"):format(
             identifier, npcId, amount, newValue
         ))
     end
 end
+
+-- Force immediate save (called on player disconnect, conversation end, etc.)
+function FlushTrustForPlayer(identifier)
+    local savedCount = 0
+    for queueKey, data in pairs(trustUpdateQueue) do
+        if data.identifier == identifier then
+            MySQL.insert([[
+                INSERT INTO ai_npc_trust (citizenid, npc_id, trust_category, trust_value, conversation_count)
+                VALUES (?, ?, ?, ?, 1)
+                ON DUPLICATE KEY UPDATE
+                    trust_value = ?,
+                    conversation_count = conversation_count + 1,
+                    last_interaction = CURRENT_TIMESTAMP
+            ]], {data.identifier, data.npcId, data.trustCategory, data.value, data.value})
+            trustUpdateQueue[queueKey] = nil
+            savedCount = savedCount + 1
+        end
+    end
+    if savedCount > 0 and Config.Debug.enabled then
+        print(("[AI NPCs] Flushed %d trust updates for %s"):format(savedCount, identifier))
+    end
+end
+
+-- Batch save all pending trust updates
+function FlushAllTrustUpdates()
+    local count = 0
+    for queueKey, data in pairs(trustUpdateQueue) do
+        MySQL.insert([[
+            INSERT INTO ai_npc_trust (citizenid, npc_id, trust_category, trust_value, conversation_count)
+            VALUES (?, ?, ?, ?, 1)
+            ON DUPLICATE KEY UPDATE
+                trust_value = ?,
+                conversation_count = conversation_count + 1,
+                last_interaction = CURRENT_TIMESTAMP
+        ]], {data.identifier, data.npcId, data.trustCategory, data.value, data.value})
+        count = count + 1
+    end
+    trustUpdateQueue = {}
+    if count > 0 then
+        print(("[AI NPCs] Batch saved %d trust updates"):format(count))
+    end
+end
+
+-- Periodic batch save thread
+CreateThread(function()
+    while true do
+        Wait(TRUST_SAVE_INTERVAL)
+        FlushAllTrustUpdates()
+    end
+end)
+
+-- Save on resource stop
+AddEventHandler('onResourceStop', function(resourceName)
+    if GetCurrentResourceName() == resourceName then
+        print("[AI NPCs] Saving all pending trust updates...")
+        FlushAllTrustUpdates()
+    end
+end)
 
 -- Set trust directly (for admin/quest rewards)
 function SetPlayerTrust(identifier, trustCategory, npcId, value)
@@ -411,6 +547,28 @@ RegisterNetEvent('ai-npcs:server:startConversation', function(npcId)
     local Player = QBCore.Functions.GetPlayer(src)
     if not Player then return end
 
+    -- Check if NPC is already in conversation with someone else
+    if IsNPCLockedByOther(npcId, src) then
+        local owner = GetNPCLockOwner(npcId)
+        TriggerClientEvent('ox_lib:notify', src, {
+            title = 'Busy',
+            description = 'This person is already talking to someone else',
+            type = 'error'
+        })
+        print(("[AI NPCs] Player %s tried to talk to %s but it's locked by %s"):format(src, npcId, owner))
+        return
+    end
+
+    -- Lock the NPC for this player
+    if not LockNPCForPlayer(npcId, src) then
+        TriggerClientEvent('ox_lib:notify', src, {
+            title = 'Busy',
+            description = 'This person is occupied',
+            type = 'error'
+        })
+        return
+    end
+
     -- Find NPC config
     local npc = nil
     for _, npcData in pairs(Config.NPCs) do
@@ -421,6 +579,7 @@ RegisterNetEvent('ai-npcs:server:startConversation', function(npcId)
     end
 
     if not npc then
+        UnlockNPC(npcId, src)  -- Release lock if NPC not found
         print(("[AI NPCs] NPC not found: %s"):format(npcId))
         return
     end
@@ -547,10 +706,36 @@ RegisterNetEvent('ai-npcs:server:endConversation', function()
             AddPlayerTrust(conversation.identifier, conversation.npc.trustCategory,
                 conversation.npcId, Config.Trust.earnRates.conversation)
         end
+
+        -- Flush trust updates immediately for this player
+        FlushTrustForPlayer(conversation.identifier)
+
+        -- Unlock the NPC so others can talk
+        UnlockNPC(conversation.npcId, src)
     end
 
     activeConversations[src] = nil
     print(("[AI NPCs] Ended conversation for player %s"):format(src))
+end)
+
+-- Also unlock on player disconnect
+AddEventHandler('playerDropped', function()
+    local src = source
+    local conversation = activeConversations[src]
+
+    if conversation then
+        FlushTrustForPlayer(conversation.identifier)
+        UnlockNPC(conversation.npcId, src)
+        activeConversations[src] = nil
+        print(("[AI NPCs] Player %s disconnected, cleaning up conversation"):format(src))
+    end
+
+    -- Also clean up any stale locks from this player
+    for npcId, lockOwner in pairs(npcLocks) do
+        if lockOwner == src then
+            npcLocks[npcId] = nil
+        end
+    end
 end)
 
 -----------------------------------------------------------
@@ -699,19 +884,35 @@ exports('SetPlayerTrustWithNPC', function(playerId, npcId, value)
     return false
 end)
 
--- Quest exports
-exports('OfferQuestToPlayer', function(playerId, npcId, questId, questType, questData)
+-- Quest exports (with range validation for security)
+exports('OfferQuestToPlayer', function(playerId, npcId, questId, questType, questData, skipRangeCheck)
     local Player = QBCore.Functions.GetPlayer(playerId)
     if not Player then return false end
+
+    -- Range validation (can be bypassed by server scripts with skipRangeCheck)
+    if not skipRangeCheck and not IsPlayerNearNPC(playerId, npcId) then
+        if Config.Debug.enabled then
+            print(("[AI NPCs] OfferQuest blocked: Player %s not near NPC %s"):format(playerId, npcId))
+        end
+        return false, "not_in_range"
+    end
 
     local identifier = Player.PlayerData.citizenid
     OfferQuest(identifier, npcId, questId, questType, questData)
     return true
 end)
 
-exports('CompletePlayerQuest', function(playerId, npcId, questId, trustReward)
+exports('CompletePlayerQuest', function(playerId, npcId, questId, trustReward, skipRangeCheck)
     local Player = QBCore.Functions.GetPlayer(playerId)
     if not Player then return false end
+
+    -- Range validation for quest completion (slightly larger range)
+    if not skipRangeCheck and not IsPlayerInQuestRange(playerId, npcId) then
+        if Config.Debug.enabled then
+            print(("[AI NPCs] CompleteQuest blocked: Player %s not near NPC %s"):format(playerId, npcId))
+        end
+        return false, "not_in_range"
+    end
 
     local identifier = Player.PlayerData.citizenid
     CompleteQuest(identifier, npcId, questId, trustReward)
@@ -726,10 +927,18 @@ exports('GetPlayerQuestStatus', function(playerId, npcId, questId)
     return GetQuestStatus(identifier, npcId, questId)
 end)
 
--- Referral exports
-exports('CreatePlayerReferral', function(playerId, fromNpcId, toNpcId, referralType)
+-- Referral exports (with range validation)
+exports('CreatePlayerReferral', function(playerId, fromNpcId, toNpcId, referralType, skipRangeCheck)
     local Player = QBCore.Functions.GetPlayer(playerId)
     if not Player then return false end
+
+    -- Must be near the NPC giving the referral
+    if not skipRangeCheck and not IsPlayerNearNPC(playerId, fromNpcId) then
+        if Config.Debug.enabled then
+            print(("[AI NPCs] CreateReferral blocked: Player %s not near NPC %s"):format(playerId, fromNpcId))
+        end
+        return false, "not_in_range"
+    end
 
     local identifier = Player.PlayerData.citizenid
     CreateReferral(identifier, fromNpcId, toNpcId, referralType)

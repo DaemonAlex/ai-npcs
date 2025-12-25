@@ -1960,3 +1960,49 @@ Config.Debug = {
     printResponses = true,
     printPlayerContext = false
 }
+
+-----------------------------------------------------------
+-- Fallback Responses (used when AI API fails or times out)
+-----------------------------------------------------------
+Config.FallbackResponses = {
+    -- Generic fallbacks for any NPC type
+    generic = {
+        "*scratches head* What were we talking about again?",
+        "*looks around nervously* I... forgot what I was saying.",
+        "Hmm? Sorry, got distracted for a second there.",
+        "*clears throat* Anyway, what did you want to know?",
+        "*shifts weight* My mind wandered for a bit there...",
+    },
+    -- For criminal/underground NPCs
+    criminal = {
+        "*glances around* Can't talk right now, too many eyes.",
+        "*lowers voice* Not a good time. Come back later.",
+        "I don't know nothing about nothing, capisce?",
+        "*shrugs* Street's been quiet. Nothing to report.",
+        "*spits* Ask someone else, I got my own problems.",
+    },
+    -- For legitimate/professional NPCs
+    legitimate = {
+        "I'm sorry, I'm quite busy at the moment.",
+        "*checks phone* I have another appointment, can we continue later?",
+        "Is there something specific I can help you with?",
+        "*smiles politely* Why don't we pick this up another time?",
+        "I'm not sure I understand what you're asking.",
+    },
+    -- For service industry NPCs (bartenders, etc)
+    service = {
+        "How can I help you today?",
+        "*nods* What can I get for you?",
+        "Need anything else?",
+        "*wipes counter* Just let me know if you need something.",
+        "Anything on your mind?",
+    },
+    -- For when API is actually down/erroring
+    api_error = {
+        "*holds head* Sorry, not feeling well right now. Come back later.",
+        "*waves dismissively* Bad timing, friend. Maybe later.",
+        "*turns away* I've got nothing for you today.",
+        "*sighs* Too much on my mind right now. Another day.",
+        "*looks tired* Not now. I need a break.",
+    }
+}
