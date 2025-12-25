@@ -63,18 +63,23 @@ Trust is earned through:
    - ox_lib
    - ox_target
 
-2. **Add API Keys**: Edit `config.lua`:
+2. **Copy Config**:
+   ```bash
+   cp config.example.lua config.lua
+   ```
+
+3. **Add API Keys**: Edit `config.lua`:
    ```lua
    Config.AI.apiKey = "your_anthropic_or_openai_key"
    Config.TTS.apiKey = "your_elevenlabs_key" -- Optional
    ```
 
-3. **Add to server.cfg**:
+4. **Add to server.cfg**:
    ```
    ensure ai-npcs
    ```
 
-4. **Restart Server**
+5. **Restart Server**
 
 ## Included NPCs
 
