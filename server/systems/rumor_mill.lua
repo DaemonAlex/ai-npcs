@@ -233,10 +233,70 @@ CreateThread(function()
 end)
 
 -----------------------------------------------------------
+-- BUILD RUMOR CONTEXT FOR AI PROMPT
+-----------------------------------------------------------
+function BuildRumorContext(npcId, citizenid, npcData)
+    -- Determine NPC's access level based on their type
+    local accessLevel = "street"
+
+    if npcData then
+        if npcData.trustCategory == "gang" or npcData.trustCategory == "underground" then
+            accessLevel = "underground"
+        elseif npcData.trustCategory == "criminal" then
+            accessLevel = "street"
+        elseif npcData.trustCategory == "legitimate" then
+            accessLevel = "citywide"  -- Only knows public info
+        end
+    end
+
+    -- Get rumors about this player
+    local rumors = GetRumorsAboutPlayer(citizenid, accessLevel)
+
+    if not rumors or #rumors == 0 then
+        return ""
+    end
+
+    -- Get player name for formatting
+    local Player = exports['qb-core']:GetCoreObject().Functions.GetPlayerByCitizenId(citizenid)
+    local playerName = Player and Player.PlayerData.charinfo.firstname or "this person"
+
+    -- Format rumors
+    local formatted = FormatRumorsForContext(rumors, playerName)
+
+    if not formatted or #formatted == 0 then
+        return ""
+    end
+
+    -- Build context string
+    local context = "\n=== WHAT YOU'VE HEARD ABOUT THEM ===\n"
+    context = context .. "Word travels fast on the streets. Here's what you know about this person:\n"
+
+    for _, rumor in ipairs(formatted) do
+        local heatIndicator = ""
+        if rumor.heat >= 80 then
+            heatIndicator = " (EVERYONE'S talking about this)"
+        elseif rumor.heat >= 60 then
+            heatIndicator = " (hot topic)"
+        elseif rumor.heat >= 40 then
+            heatIndicator = " (been hearing whispers)"
+        end
+
+        context = context .. string.format("- %s%s\n", rumor.text, heatIndicator)
+    end
+
+    context = context .. "\nYou can reference this knowledge naturally in conversation.\n"
+    context = context .. "If their reputation is violent, be appropriately wary.\n"
+    context = context .. "If they've done big jobs, treat them with more respect.\n"
+
+    return context
+end
+
+-----------------------------------------------------------
 -- EXPORTS
 -----------------------------------------------------------
 exports('RecordPlayerAction', RecordPlayerAction)
 exports('GetRumorsAboutPlayer', GetRumorsAboutPlayer)
+exports('BuildRumorContext', BuildRumorContext)
 
 -----------------------------------------------------------
 -- EVENTS FOR OTHER SCRIPTS TO HOOK INTO

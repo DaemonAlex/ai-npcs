@@ -8,7 +8,8 @@ version '2.5.0'
 
 shared_scripts {
     '@ox_lib/init.lua',
-    'config.lua'
+    'config.lua',
+    'quests.lua'
 }
 
 client_scripts {
@@ -23,7 +24,10 @@ server_scripts {
     'server/systems/rumor_mill.lua',
     'server/systems/faction_trust.lua',
     'server/systems/npc_mood.lua',
-    'server/systems/notifications.lua'
+    'server/systems/notifications.lua',
+    'server/systems/intel.lua',
+    'server/systems/coop_quests.lua',
+    'server/systems/interrogation.lua'
 }
 
 ui_page 'html/index.html'
@@ -57,15 +61,18 @@ exports {
     'AddFactionTrust',
     'RecordFactionKill',
     'GetNPCFactionView',
+    'BuildFactionContext',
 
     -- Rumor Mill (v2.5)
     'RecordPlayerAction',
     'GetRumorsAboutPlayer',
+    'BuildRumorContext',
 
     -- NPC Mood (v2.5)
     'GetNPCMood',
     'SetNPCTempMood',
     'SetGlobalMoodEvent',
+    'BuildMoodContext',
 
     -- Notifications (v2.5)
     'CreateNPCNotification',
@@ -73,6 +80,30 @@ exports {
     'SendQuestNotification',
     'SendDebtReminder',
     'SendWarningNotification',
+    'SendOpportunityNotification',
+
+    -- Intel (v2.5)
+    'CreateIntel',
+    'GetAvailableIntel',
+    'PurchaseIntel',
+    'BuildIntelContext',
+    'GenerateIntelForNPC',
+
+    -- Co-op Quests (v2.5)
+    'CreateCoopQuest',
+    'JoinCoopQuest',
+    'LeaveCoopQuest',
+    'StartCoopQuest',
+    'UpdateCoopContribution',
+    'CompleteCoopQuest',
+    'CancelCoopQuest',
+    'GetPlayerCoopQuests',
+    'InviteToCoopQuest',
+
+    -- Interrogation (v2.5)
+    'CanInterrogate',
+    'PerformInterrogation',
+    'GetNPCResistance',
 
     -- Quests
     'OfferQuestToPlayer',

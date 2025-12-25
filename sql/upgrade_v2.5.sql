@@ -49,37 +49,33 @@ CREATE TABLE IF NOT EXISTS `ai_npc_rumors` (
 -- Intel that expires or changes over time
 CREATE TABLE IF NOT EXISTS `ai_npc_intel` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
-    `intel_id` VARCHAR(100) NOT NULL,           -- Unique intel identifier
     `npc_id` VARCHAR(50) NOT NULL,              -- Which NPC knows this
-    `category` VARCHAR(50) NOT NULL,            -- 'heist', 'drug_shipment', 'gang_war', etc.
-    `tier` ENUM('rumor', 'basic', 'detailed', 'sensitive', 'exclusive') DEFAULT 'rumor',
+    `intel_type` VARCHAR(50) NOT NULL,          -- 'bank_job', 'stash_location', etc.
+    `category` VARCHAR(50) NOT NULL,            -- 'heist', 'drugs', 'info', etc.
     `title` VARCHAR(255) NOT NULL,
-    `content` TEXT NOT NULL,
+    `details` JSON DEFAULT NULL,                -- Specific intel details
+    `value` INT DEFAULT 0,                      -- Price in dollars
     `trust_required` INT DEFAULT 0,
-    `price` INT DEFAULT 0,
-    `is_active` BOOLEAN DEFAULT TRUE,
-    `valid_from` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    `valid_until` TIMESTAMP NULL,               -- Intel expires after this
-    `times_sold` INT DEFAULT 0,                 -- Track how many bought it
-    `max_sales` INT DEFAULT NULL,               -- Limited availability (NULL = unlimited)
-    `triggers_event` VARCHAR(100) DEFAULT NULL, -- Event to fire when purchased
+    `expires_at` TIMESTAMP NULL,                -- Intel expires after this
+    `max_buyers` INT DEFAULT 1,                 -- Limited availability
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY `unique_intel` (`intel_id`),
     INDEX `idx_npc_id` (`npc_id`),
+    INDEX `idx_intel_type` (`intel_type`),
     INDEX `idx_category` (`category`),
-    INDEX `idx_valid_until` (`valid_until`),
-    INDEX `idx_is_active` (`is_active`)
+    INDEX `idx_expires` (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Track who bought what intel
 CREATE TABLE IF NOT EXISTS `ai_npc_intel_purchases` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `intel_id` INT NOT NULL,                    -- References ai_npc_intel.id
     `citizenid` VARCHAR(50) NOT NULL,
-    `intel_id` VARCHAR(100) NOT NULL,
     `price_paid` INT DEFAULT 0,
     `purchased_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY `unique_purchase` (`citizenid`, `intel_id`),
-    INDEX `idx_citizenid` (`citizenid`)
+    INDEX `idx_citizenid` (`citizenid`),
+    INDEX `idx_intel_id` (`intel_id`),
+    FOREIGN KEY (`intel_id`) REFERENCES `ai_npc_intel`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- =========================================================
@@ -203,15 +199,21 @@ CREATE TABLE IF NOT EXISTS `ai_npc_interrogations` (
 -- CLEANUP JOBS (Scheduled maintenance)
 -- =========================================================
 
--- Event to clean expired rumors daily
+-- Event to clean expired data daily
 DELIMITER //
-CREATE EVENT IF NOT EXISTS `cleanup_expired_rumors`
+CREATE EVENT IF NOT EXISTS `cleanup_expired_ai_npc_data`
 ON SCHEDULE EVERY 1 DAY
 DO
 BEGIN
+    -- Clean expired rumors
     DELETE FROM `ai_npc_rumors` WHERE `expires_at` IS NOT NULL AND `expires_at` < NOW();
-    DELETE FROM `ai_npc_intel` WHERE `valid_until` IS NOT NULL AND `valid_until` < NOW();
+    -- Clean expired intel
+    DELETE FROM `ai_npc_intel` WHERE `expires_at` IS NOT NULL AND `expires_at` < NOW();
+    -- Clean expired notifications
     DELETE FROM `ai_npc_notifications` WHERE `expires_at` IS NOT NULL AND `expires_at` < NOW();
+    -- Decay rumor heat levels
     UPDATE `ai_npc_rumors` SET `heat_level` = GREATEST(0, `heat_level` - 10) WHERE `heat_level` > 0;
+    -- Clean old player action logs (keep 30 days)
+    DELETE FROM `ai_npc_player_actions` WHERE `created_at` < DATE_SUB(NOW(), INTERVAL 30 DAY);
 END //
 DELIMITER ;

@@ -283,10 +283,53 @@ function GenerateAIResponseInternal(playerId, conversation, playerMessage, onCom
 end
 
 -----------------------------------------------------------
--- Build Context-Aware System Prompt
+-- Build Context-Aware System Prompt (v2.5 Enhanced)
 -----------------------------------------------------------
 function BuildContextualSystemPrompt(npc, playerContext, conversation)
     local prompt = npc.systemPrompt .. "\n\n"
+
+    local citizenid = playerContext.citizenid
+
+    -- ===========================================
+    -- V2.5: NPC MOOD CONTEXT
+    -- ===========================================
+    local moodContext, moodEffects = "", nil
+    if exports['ai-npcs'].BuildMoodContext then
+        moodContext, moodEffects = exports['ai-npcs']:BuildMoodContext(npc.id, npc)
+        if moodContext and moodContext ~= "" then
+            prompt = prompt .. moodContext .. "\n"
+        end
+    end
+
+    -- ===========================================
+    -- V2.5: FACTION TRUST CONTEXT
+    -- ===========================================
+    if exports['ai-npcs'].BuildFactionContext and citizenid then
+        local factionContext = exports['ai-npcs']:BuildFactionContext(npc.id, citizenid, playerContext.name)
+        if factionContext and factionContext ~= "" then
+            prompt = prompt .. factionContext .. "\n"
+        end
+    end
+
+    -- ===========================================
+    -- V2.5: RUMOR MILL CONTEXT
+    -- ===========================================
+    if exports['ai-npcs'].BuildRumorContext and citizenid then
+        local rumorContext = exports['ai-npcs']:BuildRumorContext(npc.id, citizenid, npc)
+        if rumorContext and rumorContext ~= "" then
+            prompt = prompt .. rumorContext .. "\n"
+        end
+    end
+
+    -- ===========================================
+    -- V2.5: INTEL CONTEXT (what you can offer)
+    -- ===========================================
+    if exports['ai-npcs'].BuildIntelContext and citizenid then
+        local intelContext = exports['ai-npcs']:BuildIntelContext(npc.id, citizenid)
+        if intelContext and intelContext ~= "" then
+            prompt = prompt .. intelContext .. "\n"
+        end
+    end
 
     -- Add current context section
     prompt = prompt .. "=== CURRENT SITUATION ===\n"
