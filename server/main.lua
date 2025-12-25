@@ -1,8 +1,8 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 
--- Data stores
+-- Data stores (cache - synced with database)
 local activeConversations = {}
-local playerTrust = {}        -- { [identifier] = { [trustCategory] = { [npcId] = trustLevel } } }
+local playerTrustCache = {}   -- In-memory cache, synced with DB
 local intelCooldowns = {}     -- { [identifier] = { [topic] = lastAccessTime } }
 local audioCache = {}
 local cacheSize = 0
@@ -13,51 +13,81 @@ local cacheSize = 0
 CreateThread(function()
     print("^2[AI NPCs]^7 Server initialized - Advanced conversation system loaded")
     print("^2[AI NPCs]^7 Trust system: " .. (Config.Trust.enabled and "ENABLED" or "DISABLED"))
+    print("^2[AI NPCs]^7 Database persistence: ENABLED")
     print("^2[AI NPCs]^7 Player context: ENABLED")
-    LoadTrustData()
 end)
 
 -----------------------------------------------------------
--- TRUST SYSTEM
+-- DATABASE: TRUST SYSTEM
 -----------------------------------------------------------
-function LoadTrustData()
-    -- Load from database if you have one, otherwise starts fresh
-    -- Example: MySQL query to load trust data
-    -- For now, we keep it in memory (resets on restart)
-    print("[AI NPCs] Trust data initialized (in-memory)")
-end
 
-function SaveTrustData()
-    -- Save to database
-    -- Example: MySQL query to save trust data
-end
-
+-- Get trust from database (with caching)
 function GetPlayerTrust(identifier, trustCategory, npcId)
-    if not playerTrust[identifier] then return 0 end
-    if not playerTrust[identifier][trustCategory] then return 0 end
-    if not playerTrust[identifier][trustCategory][npcId] then return 0 end
-    return playerTrust[identifier][trustCategory][npcId]
+    -- Check cache first
+    if playerTrustCache[identifier] and
+       playerTrustCache[identifier][trustCategory] and
+       playerTrustCache[identifier][trustCategory][npcId] then
+        return playerTrustCache[identifier][trustCategory][npcId]
+    end
+
+    -- Query database
+    local result = MySQL.scalar.await([[
+        SELECT trust_value FROM ai_npc_trust
+        WHERE citizenid = ? AND npc_id = ? AND trust_category = ?
+    ]], {identifier, npcId, trustCategory})
+
+    local trustValue = result or 0
+
+    -- Update cache
+    if not playerTrustCache[identifier] then playerTrustCache[identifier] = {} end
+    if not playerTrustCache[identifier][trustCategory] then playerTrustCache[identifier][trustCategory] = {} end
+    playerTrustCache[identifier][trustCategory][npcId] = trustValue
+
+    return trustValue
 end
 
+-- Add trust and save to database
 function AddPlayerTrust(identifier, trustCategory, npcId, amount)
-    if not playerTrust[identifier] then
-        playerTrust[identifier] = {}
-    end
-    if not playerTrust[identifier][trustCategory] then
-        playerTrust[identifier][trustCategory] = {}
-    end
-    if not playerTrust[identifier][trustCategory][npcId] then
-        playerTrust[identifier][trustCategory][npcId] = 0
-    end
+    local current = GetPlayerTrust(identifier, trustCategory, npcId)
+    local newValue = math.min(100, current + amount)
 
-    local current = playerTrust[identifier][trustCategory][npcId]
-    playerTrust[identifier][trustCategory][npcId] = math.min(100, current + amount)
+    -- Update cache
+    if not playerTrustCache[identifier] then playerTrustCache[identifier] = {} end
+    if not playerTrustCache[identifier][trustCategory] then playerTrustCache[identifier][trustCategory] = {} end
+    playerTrustCache[identifier][trustCategory][npcId] = newValue
+
+    -- Upsert to database
+    MySQL.insert.await([[
+        INSERT INTO ai_npc_trust (citizenid, npc_id, trust_category, trust_value, conversation_count)
+        VALUES (?, ?, ?, ?, 1)
+        ON DUPLICATE KEY UPDATE
+            trust_value = ?,
+            conversation_count = conversation_count + 1,
+            last_interaction = CURRENT_TIMESTAMP
+    ]], {identifier, npcId, trustCategory, newValue, newValue})
 
     if Config.Debug.enabled then
-        print(("[AI NPCs] Trust updated: %s -> %s (+%d) = %d"):format(
-            identifier, npcId, amount, playerTrust[identifier][trustCategory][npcId]
+        print(("[AI NPCs] Trust saved to DB: %s -> %s (+%d) = %d"):format(
+            identifier, npcId, amount, newValue
         ))
     end
+end
+
+-- Set trust directly (for admin/quest rewards)
+function SetPlayerTrust(identifier, trustCategory, npcId, value)
+    value = math.max(0, math.min(100, value))
+
+    -- Update cache
+    if not playerTrustCache[identifier] then playerTrustCache[identifier] = {} end
+    if not playerTrustCache[identifier][trustCategory] then playerTrustCache[identifier][trustCategory] = {} end
+    playerTrustCache[identifier][trustCategory][npcId] = value
+
+    -- Upsert to database
+    MySQL.insert.await([[
+        INSERT INTO ai_npc_trust (citizenid, npc_id, trust_category, trust_value)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE trust_value = ?, last_interaction = CURRENT_TIMESTAMP
+    ]], {identifier, npcId, trustCategory, value, value})
 end
 
 function GetTrustLevel(trustValue)
@@ -67,6 +97,208 @@ function GetTrustLevel(trustValue)
         end
     end
     return "Stranger"
+end
+
+-----------------------------------------------------------
+-- DATABASE: QUEST SYSTEM
+-----------------------------------------------------------
+
+-- Offer a quest to a player
+function OfferQuest(identifier, npcId, questId, questType, questData)
+    MySQL.insert.await([[
+        INSERT INTO ai_npc_quests (citizenid, npc_id, quest_id, quest_type, status, quest_data)
+        VALUES (?, ?, ?, ?, 'offered', ?)
+        ON DUPLICATE KEY UPDATE status = 'offered', quest_data = ?, offered_at = CURRENT_TIMESTAMP
+    ]], {identifier, npcId, questId, questType, json.encode(questData), json.encode(questData)})
+end
+
+-- Accept a quest
+function AcceptQuest(identifier, npcId, questId)
+    MySQL.update.await([[
+        UPDATE ai_npc_quests SET status = 'accepted'
+        WHERE citizenid = ? AND npc_id = ? AND quest_id = ?
+    ]], {identifier, npcId, questId})
+end
+
+-- Complete a quest
+function CompleteQuest(identifier, npcId, questId, trustReward)
+    MySQL.update.await([[
+        UPDATE ai_npc_quests SET status = 'completed', completed_at = CURRENT_TIMESTAMP
+        WHERE citizenid = ? AND npc_id = ? AND quest_id = ?
+    ]], {identifier, npcId, questId})
+
+    -- Award trust if specified
+    if trustReward and trustReward > 0 then
+        local npc = GetNPCById(npcId)
+        if npc then
+            AddPlayerTrust(identifier, npc.trustCategory, npcId, trustReward)
+        end
+    end
+end
+
+-- Get player's quest status with an NPC
+function GetQuestStatus(identifier, npcId, questId)
+    local result = MySQL.scalar.await([[
+        SELECT status FROM ai_npc_quests
+        WHERE citizenid = ? AND npc_id = ? AND quest_id = ?
+    ]], {identifier, npcId, questId})
+    return result
+end
+
+-- Get all active quests for a player
+function GetPlayerActiveQuests(identifier)
+    local results = MySQL.query.await([[
+        SELECT * FROM ai_npc_quests
+        WHERE citizenid = ? AND status IN ('offered', 'accepted', 'in_progress')
+    ]], {identifier})
+    return results or {}
+end
+
+-----------------------------------------------------------
+-- DATABASE: REFERRAL SYSTEM
+-----------------------------------------------------------
+
+-- Create a referral (NPC A vouches for player to NPC B)
+function CreateReferral(identifier, fromNpcId, toNpcId, referralType)
+    MySQL.insert.await([[
+        INSERT INTO ai_npc_referrals (citizenid, from_npc_id, to_npc_id, referral_type)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE referral_type = ?, created_at = CURRENT_TIMESTAMP
+    ]], {identifier, fromNpcId, toNpcId, referralType or 'standard', referralType or 'standard'})
+end
+
+-- Check if player has a referral to an NPC
+function HasReferral(identifier, toNpcId)
+    local result = MySQL.scalar.await([[
+        SELECT COUNT(*) FROM ai_npc_referrals
+        WHERE citizenid = ? AND to_npc_id = ? AND used = FALSE
+    ]], {identifier, toNpcId})
+    return (result or 0) > 0
+end
+
+-- Get who referred the player
+function GetReferrer(identifier, toNpcId)
+    local result = MySQL.scalar.await([[
+        SELECT from_npc_id FROM ai_npc_referrals
+        WHERE citizenid = ? AND to_npc_id = ? AND used = FALSE
+        ORDER BY created_at DESC LIMIT 1
+    ]], {identifier, toNpcId})
+    return result
+end
+
+-- Mark referral as used
+function UseReferral(identifier, toNpcId)
+    MySQL.update.await([[
+        UPDATE ai_npc_referrals SET used = TRUE
+        WHERE citizenid = ? AND to_npc_id = ? AND used = FALSE
+    ]], {identifier, toNpcId})
+end
+
+-----------------------------------------------------------
+-- DATABASE: DEBT SYSTEM
+-----------------------------------------------------------
+
+-- Create a debt (player owes NPC)
+function CreateDebt(identifier, npcId, debtType, amount, description)
+    MySQL.insert.await([[
+        INSERT INTO ai_npc_debts (citizenid, npc_id, debt_type, amount, description, status)
+        VALUES (?, ?, ?, ?, ?, 'pending')
+    ]], {identifier, npcId, debtType, amount, description})
+end
+
+-- Get player's debts to an NPC
+function GetPlayerDebts(identifier, npcId)
+    local results = MySQL.query.await([[
+        SELECT * FROM ai_npc_debts
+        WHERE citizenid = ? AND npc_id = ? AND status = 'pending'
+    ]], {identifier, npcId})
+    return results or {}
+end
+
+-- Pay off a debt
+function PayDebt(identifier, debtId)
+    MySQL.update.await([[
+        UPDATE ai_npc_debts SET status = 'paid', paid_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND citizenid = ?
+    ]], {debtId, identifier})
+end
+
+-- Check total debt to NPC
+function GetTotalDebt(identifier, npcId)
+    local result = MySQL.scalar.await([[
+        SELECT COALESCE(SUM(amount), 0) FROM ai_npc_debts
+        WHERE citizenid = ? AND npc_id = ? AND status = 'pending' AND debt_type = 'money'
+    ]], {identifier, npcId})
+    return result or 0
+end
+
+-----------------------------------------------------------
+-- DATABASE: MEMORY SYSTEM (NPCs remember things)
+-----------------------------------------------------------
+
+-- Add a memory about a player
+function AddNPCMemory(identifier, npcId, memoryType, memoryText, importance, expiresInDays)
+    local expiresAt = nil
+    if expiresInDays then
+        expiresAt = os.date("%Y-%m-%d %H:%M:%S", os.time() + (expiresInDays * 86400))
+    end
+
+    MySQL.insert.await([[
+        INSERT INTO ai_npc_memories (citizenid, npc_id, memory_type, memory_text, importance, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ]], {identifier, npcId, memoryType, memoryText, importance or 5, expiresAt})
+end
+
+-- Get NPC's memories about a player
+function GetNPCMemories(identifier, npcId, limit)
+    local results = MySQL.query.await([[
+        SELECT * FROM ai_npc_memories
+        WHERE citizenid = ? AND npc_id = ?
+        AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+        ORDER BY importance DESC, created_at DESC
+        LIMIT ?
+    ]], {identifier, npcId, limit or 5})
+    return results or {}
+end
+
+-----------------------------------------------------------
+-- DATABASE: INTEL COOLDOWNS
+-----------------------------------------------------------
+
+-- Check if intel is on cooldown
+function CanAccessIntel(identifier, topic, tier)
+    local cooldown = Config.Intel.cooldowns[tier] or 600000
+    local cooldownSeconds = cooldown / 1000
+
+    local result = MySQL.scalar.await([[
+        SELECT TIMESTAMPDIFF(SECOND, accessed_at, CURRENT_TIMESTAMP)
+        FROM ai_npc_intel_cooldowns
+        WHERE citizenid = ? AND topic = ?
+    ]], {identifier, topic})
+
+    if not result then return true end
+    return result >= cooldownSeconds
+end
+
+-- Record intel access
+function RecordIntelAccess(identifier, topic, tier)
+    MySQL.insert.await([[
+        INSERT INTO ai_npc_intel_cooldowns (citizenid, topic, tier, accessed_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE tier = ?, accessed_at = CURRENT_TIMESTAMP
+    ]], {identifier, topic, tier, tier})
+end
+
+-----------------------------------------------------------
+-- HELPER: Get NPC by ID
+-----------------------------------------------------------
+function GetNPCById(npcId)
+    for _, npc in pairs(Config.NPCs) do
+        if npc.id == npcId then
+            return npc
+        end
+    end
+    return nil
 end
 
 -----------------------------------------------------------
@@ -451,4 +683,108 @@ exports('AddPlayerTrustWithNPC', function(playerId, npcId, amount)
         end
     end
     return false
+end)
+
+exports('SetPlayerTrustWithNPC', function(playerId, npcId, value)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    local identifier = Player.PlayerData.citizenid
+    for _, npc in pairs(Config.NPCs) do
+        if npc.id == npcId then
+            SetPlayerTrust(identifier, npc.trustCategory, npcId, value)
+            return true
+        end
+    end
+    return false
+end)
+
+-- Quest exports
+exports('OfferQuestToPlayer', function(playerId, npcId, questId, questType, questData)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    local identifier = Player.PlayerData.citizenid
+    OfferQuest(identifier, npcId, questId, questType, questData)
+    return true
+end)
+
+exports('CompletePlayerQuest', function(playerId, npcId, questId, trustReward)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    local identifier = Player.PlayerData.citizenid
+    CompleteQuest(identifier, npcId, questId, trustReward)
+    return true
+end)
+
+exports('GetPlayerQuestStatus', function(playerId, npcId, questId)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return nil end
+
+    local identifier = Player.PlayerData.citizenid
+    return GetQuestStatus(identifier, npcId, questId)
+end)
+
+-- Referral exports
+exports('CreatePlayerReferral', function(playerId, fromNpcId, toNpcId, referralType)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    local identifier = Player.PlayerData.citizenid
+    CreateReferral(identifier, fromNpcId, toNpcId, referralType)
+    return true
+end)
+
+exports('HasPlayerReferral', function(playerId, toNpcId)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    local identifier = Player.PlayerData.citizenid
+    return HasReferral(identifier, toNpcId)
+end)
+
+-- Debt exports
+exports('CreatePlayerDebt', function(playerId, npcId, debtType, amount, description)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    local identifier = Player.PlayerData.citizenid
+    CreateDebt(identifier, npcId, debtType, amount, description)
+    return true
+end)
+
+exports('GetPlayerDebts', function(playerId, npcId)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return {} end
+
+    local identifier = Player.PlayerData.citizenid
+    return GetPlayerDebts(identifier, npcId)
+end)
+
+exports('PayPlayerDebt', function(playerId, debtId)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    local identifier = Player.PlayerData.citizenid
+    PayDebt(identifier, debtId)
+    return true
+end)
+
+-- Memory exports
+exports('AddNPCMemoryAboutPlayer', function(playerId, npcId, memoryType, memoryText, importance, expiresInDays)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return false end
+
+    local identifier = Player.PlayerData.citizenid
+    AddNPCMemory(identifier, npcId, memoryType, memoryText, importance, expiresInDays)
+    return true
+end)
+
+exports('GetNPCMemoriesAboutPlayer', function(playerId, npcId, limit)
+    local Player = QBCore.Functions.GetPlayer(playerId)
+    if not Player then return {} end
+
+    local identifier = Player.PlayerData.citizenid
+    return GetNPCMemories(identifier, npcId, limit)
 end)

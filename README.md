@@ -62,25 +62,40 @@ Trust is earned through:
    - qb-core
    - ox_lib
    - ox_target
+   - oxmysql
    - Anthropic API key (https://console.anthropic.com/) or OpenAI API key
 
-2. **Copy Config**:
+2. **Database Setup**:
+   Run the SQL schema to create required tables:
+   ```bash
+   mysql -u root -p your_database < sql/install.sql
+   ```
+
+   This creates 6 tables:
+   - `ai_npc_trust` - Trust/reputation tracking per player per NPC
+   - `ai_npc_quests` - Quest/task progress tracking
+   - `ai_npc_intel_cooldowns` - Intel access cooldowns
+   - `ai_npc_referrals` - NPC referral tracking
+   - `ai_npc_debts` - Player debts/promises to NPCs
+   - `ai_npc_memories` - NPC memories about players
+
+3. **Copy Config**:
    ```bash
    cp config.example.lua config.lua
    ```
 
-3. **Add API Keys**: Edit `config.lua`:
+4. **Add API Keys**: Edit `config.lua`:
    ```lua
    Config.AI.apiKey = "your_anthropic_or_openai_key"
    Config.TTS.apiKey = "your_elevenlabs_key" -- Optional
    ```
 
-4. **Add to server.cfg**:
+5. **Add to server.cfg**:
    ```
    ensure ai-npcs
    ```
 
-5. **Restart Server**
+6. **Restart Server**
 
 ## Included NPCs
 
@@ -187,11 +202,57 @@ Available reaction types for NPCs:
 ### Exports
 
 ```lua
--- Get player's trust with an NPC
+-- TRUST SYSTEM
+-- Get player's trust with an NPC (returns 0-100)
 local trust = exports['ai-npcs']:GetPlayerTrustWithNPC(playerId, npcId)
 
 -- Add trust between player and NPC
 exports['ai-npcs']:AddPlayerTrustWithNPC(playerId, npcId, amount)
+
+-- Set trust to specific value (admin/quest rewards)
+exports['ai-npcs']:SetPlayerTrustWithNPC(playerId, npcId, value)
+
+-- QUEST SYSTEM
+-- Offer a quest to a player
+-- questType: 'item_delivery', 'task', 'payment', 'kill', 'frame', 'escort', 'other'
+exports['ai-npcs']:OfferQuestToPlayer(playerId, npcId, questId, questType, {
+    description = "Bring me 5 car batteries",
+    items = {name = "carbattery", count = 5},
+    reward = {trust = 15, money = 5000}
+})
+
+-- Complete a quest and award trust
+exports['ai-npcs']:CompletePlayerQuest(playerId, npcId, questId, trustReward)
+
+-- Get quest status ('offered', 'accepted', 'in_progress', 'completed', 'failed')
+local status = exports['ai-npcs']:GetPlayerQuestStatus(playerId, npcId, questId)
+
+-- REFERRAL SYSTEM
+-- Create a referral (NPC A vouches for player to NPC B)
+exports['ai-npcs']:CreatePlayerReferral(playerId, fromNpcId, toNpcId, 'standard')
+
+-- Check if player has a referral to an NPC
+local hasRef = exports['ai-npcs']:HasPlayerReferral(playerId, toNpcId)
+
+-- DEBT SYSTEM
+-- Create a debt (player owes NPC)
+-- debtType: 'money', 'favor', 'item', 'percentage'
+exports['ai-npcs']:CreatePlayerDebt(playerId, npcId, 'money', 5000, "Payment for intel")
+
+-- Get player's debts to an NPC
+local debts = exports['ai-npcs']:GetPlayerDebts(playerId, npcId)
+
+-- Pay off a debt by ID
+exports['ai-npcs']:PayPlayerDebt(playerId, debtId)
+
+-- MEMORY SYSTEM
+-- Add a memory (NPC remembers something about player)
+-- memoryType: 'positive', 'negative', 'neutral', 'warning'
+exports['ai-npcs']:AddNPCMemoryAboutPlayer(playerId, npcId, 'positive',
+    "Helped me with a job", 8, 30)  -- importance 8, expires in 30 days
+
+-- Get NPC's memories about a player
+local memories = exports['ai-npcs']:GetNPCMemoriesAboutPlayer(playerId, npcId, 5)
 ```
 
 ### Events
@@ -266,8 +327,9 @@ TriggerServerEvent('ai-npcs:server:endConversation')
 - Verify patrol waypoints are valid coordinates
 
 ### Trust Not Saving
-- Trust is in-memory by default
-- Implement MySQL save in `SaveTrustData()` for persistence
+- Ensure oxmysql is running
+- Check database tables exist (`ai_npc_trust`)
+- Verify oxmysql connection string in server.cfg
 
 ### Schedule NPCs Not Appearing
 - Check in-game time matches schedule
@@ -276,14 +338,19 @@ TriggerServerEvent('ai-npcs:server:endConversation')
 ## Version History
 
 - **v2.0.0** - Major overhaul
-  - Added trust/reputation system
-  - Added intel/clue pricing system
+  - Added trust/reputation system with database persistence
+  - Added quest system (item delivery, tasks, kill, frame, escort)
+  - Added referral chains between NPCs
+  - Added debt/promise system
+  - Added NPC memory system
+  - Added intel/clue pricing system with cooldowns
   - Added player context awareness (job, items, money, gang)
   - Added NPC movement patterns (wander, patrol, schedule)
-  - Added 20+ diverse NPCs across the map
+  - Added 20+ diverse NPCs with nuanced morality
   - Added cop detection and appropriate NPC reactions
   - Added payment UI integration with ox_lib
   - Claude API support alongside OpenAI
+  - Full MySQL persistence via oxmysql
 
 - **v1.0.0** - Initial release
   - Basic AI conversation system
