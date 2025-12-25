@@ -4,7 +4,7 @@ game 'gta5'
 name 'ai-npcs'
 author 'DaemonAlex'
 description 'AI-powered NPC conversation system with trust, quests, and intel'
-version '2.0.0'
+version '2.5.0'
 
 shared_scripts {
     '@ox_lib/init.lua',
@@ -18,7 +18,12 @@ client_scripts {
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
     'server/main.lua',
-    'server/ai_handler.lua'
+    'server/ai_handler.lua',
+    -- v2.5 Systems
+    'server/systems/rumor_mill.lua',
+    'server/systems/faction_trust.lua',
+    'server/systems/npc_mood.lua',
+    'server/systems/notifications.lua'
 }
 
 ui_page 'html/index.html'
@@ -41,10 +46,33 @@ dependencies {
 
 -- Exports for other resources
 exports {
-    -- Trust
+    -- Trust (Individual NPC)
     'GetPlayerTrustWithNPC',
     'AddPlayerTrustWithNPC',
     'SetPlayerTrustWithNPC',
+
+    -- Faction Trust (v2.5)
+    'GetNPCFaction',
+    'GetFactionTrust',
+    'AddFactionTrust',
+    'RecordFactionKill',
+    'GetNPCFactionView',
+
+    -- Rumor Mill (v2.5)
+    'RecordPlayerAction',
+    'GetRumorsAboutPlayer',
+
+    -- NPC Mood (v2.5)
+    'GetNPCMood',
+    'SetNPCTempMood',
+    'SetGlobalMoodEvent',
+
+    -- Notifications (v2.5)
+    'CreateNPCNotification',
+    'SendIntelNotification',
+    'SendQuestNotification',
+    'SendDebtReminder',
+    'SendWarningNotification',
 
     -- Quests
     'OfferQuestToPlayer',
