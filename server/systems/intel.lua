@@ -432,12 +432,15 @@ function GenerateIntelDetails(intelType)
 
     elseif intelType == "drug_shipment" then
         details.arrival_hour = math.random(18, 23)
-        details.quantity = {"small", "medium", "large"}[math.random(3)]
+        local quantities = {"small", "medium", "large"}
+        details.quantity = quantities[math.random(#quantities)]
         details.guards = math.random(2, 6)
 
     elseif intelType == "bank_job" then
-        details.bank_type = {"Fleeca", "Paleto", "Pacific Standard"}[math.random(3)]
-        details.vulnerability = {"guard rotation gap", "camera blind spot", "vault timer exploit"}[math.random(3)]
+        local banks = {"Fleeca", "Paleto", "Pacific Standard"}
+        local vulns = {"guard rotation gap", "camera blind spot", "vault timer exploit"}
+        details.bank_type = banks[math.random(#banks)]
+        details.vulnerability = vulns[math.random(#vulns)]
         details.window_hours = math.random(2, 6)
 
     elseif intelType == "cop_patrol" then
@@ -446,27 +449,33 @@ function GenerateIntelDetails(intelType)
         details.response_time = math.random(2, 8)  -- minutes
 
     elseif intelType == "stash_location" then
-        details.contents = {"cash", "drugs", "weapons", "mixed"}[math.random(4)]
+        local contents = {"cash", "drugs", "weapons", "mixed"}
+        details.contents = contents[math.random(#contents)]
         details.estimated_value = math.random(10, 50) * 1000
         details.guarded = math.random(100) > 60
 
     elseif intelType == "weapon_cache" then
-        details.weapons = {"handguns", "SMGs", "rifles", "heavy"}[math.random(4)]
+        local weapons = {"handguns", "SMGs", "rifles", "heavy"}
+        details.weapons = weapons[math.random(#weapons)]
         details.quantity = math.random(5, 20)
         details.guarded = math.random(100) > 40
 
     elseif intelType == "car_boost" then
         local cars = {"Zentorno", "T20", "Adder", "Entity", "Turismo", "Vacca"}
+        local security = {"unlocked", "basic alarm", "advanced alarm", "GPS tracked"}
         details.vehicle = cars[math.random(#cars)]
-        details.security = {"unlocked", "basic alarm", "advanced alarm", "GPS tracked"}[math.random(4)]
+        details.security = security[math.random(#security)]
 
     elseif intelType == "snitch_identity" then
         details.alias = "The information points to someone close"
-        details.faction = {"Vagos", "Ballas", "Families", "Marabunta", "Lost MC"}[math.random(5)]
+        local factions = {"Vagos", "Ballas", "Families", "Marabunta", "Lost MC"}
+        details.faction = factions[math.random(#factions)]
 
     elseif intelType == "dirty_cop" then
-        details.department = {"LSPD", "BCSO", "SASP"}[math.random(3)]
-        details.corruption_type = {"takes bribes", "runs protection", "tips off raids", "plants evidence"}[math.random(4)]
+        local depts = {"LSPD", "BCSO", "SASP"}
+        local corruption = {"takes bribes", "runs protection", "tips off raids", "plants evidence"}
+        details.department = depts[math.random(#depts)]
+        details.corruption_type = corruption[math.random(#corruption)]
     end
 
     return details
