@@ -47,6 +47,13 @@ function CreateNPC(npcData)
 
     local npc = CreatePed(4, npcData.model, spawnCoords.x, spawnCoords.y, spawnCoords.z, spawnCoords.w, false, true)
 
+    -- Verify NPC was created successfully
+    if not npc or npc == 0 or not DoesEntityExist(npc) then
+        print(("[AI NPCs] ^1Failed to spawn NPC: %s (invalid entity)^7"):format(npcData.name))
+        SetModelAsNoLongerNeeded(npcData.model)
+        return
+    end
+
     -- Configure NPC base properties
     SetEntityInvincible(npc, true)
     SetPedFleeAttributes(npc, 0, 0)
