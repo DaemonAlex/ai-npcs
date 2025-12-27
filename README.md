@@ -359,4 +359,4 @@ TriggerServerEvent('ai-npcs:server:endConversation')
 
 ## Credits
 
-Original concept by DaemonAlex. Enhanced for DPSRP with comprehensive RP features.
+Original concept & code by DaemonAlex. Enhanced for DPSRP with comprehensive RP features.
